@@ -32,7 +32,8 @@ function create(state_vector, pos)
     end
     out = copy(state_vector)
     out[pos] = 1
-    return out
+    
+    out
 end
 
 
@@ -70,22 +71,24 @@ function annihilate(state_vector, pos)
     end
     out = copy(state_vector)
     out[pos] = 0
-    return out
+    
+    out
 end
 
 up(cell_no) = Int(2cell_no - 1)
 down(cell_no) = Int(2cell_no)
 
+# Converts bit state vector to the index it represents (e.g. [1, 1, 0, 0] -> 4)
 state_to_idx(state) = reduce(+, state .* [2^n for n in 0:length(state)-1]) + 1
-state_to_statevec(state) = [x == state_to_idx(state) ? 1.0 : 0.0 for x in 1:(length(state))^2]
 
-# H |state>
-interacting_term(state, U, N) = U * reduce(+, [state[up(n)] * state[down(n)] for n in 1:N]) .* state_to_statevec(state)
+# Converts bit state vector to the full state vector (e.g. [1, 1, 0, 0] becomes a vector of length 16)
+state_to_statevec(state) = [x == state_to_idx(state) ? 1.0 : 0.0 for x in 1:2^(length(state))]
 
-function kinetic_term(state, t, next) 
+# perform H |state> and get statevec of: alpha |state'>
+function hamiltonian_on_state(U, t, chem_pot, state, next)
     N = div(length(state), 2)
-    total = zeros((2N)^2)
-    for n in 1:(N)
+    total = zeros(2^(2N))
+    for n in 1:N
         tmp1 = annihilate(state, up(next[n]))
         tmp2 = create(tmp1, up(n))
         if typeof(tmp2) != Int
@@ -97,31 +100,17 @@ function kinetic_term(state, t, next)
             total[state_to_idx(tmp4)] += 1
         end
     end
-    return t * total
-end
 
-# perform H |state> and get statevec of: alpha |state'>
-function hamiltonian_on_state(U, t, chem_pot, state, next)
-    N = div(length(state), 2)
-    # @show state
-    interacting = interacting_term(state, U, N)
-    # @show interacting
-    kinetic = kinetic_term(state, t, next)
-    # @show kinetic
+    kinetic = t * total
+    interacting = U * reduce(+, [state[up(n)] * state[down(n)] for n in 1:N]) .* state_to_statevec(state)
     chemical = chem_pot * reduce(+, state) .* state_to_statevec(state)
+    
     interacting + kinetic - chemical
 end
 
 
-normalize_statevec(statevec) = [x == 0 ? 0 : 1 for x in statevec]
-
-
 function braket(bra, ket)
-#     if normalize_statevec(bra) == normalize_statevec(ket)
-        return dot(bra, ket)
-#     else
-#         return 0.0
-#     end
+    dot(bra, ket)
 end
 
 
@@ -132,11 +121,12 @@ function get_hamiltonian(states, U, t, chem_pot, next, N)
     for i in 1:(2N)^2, j in 1:(2N)^2
         hamiltonian[i, j] = braket(state_to_statevec(states[i]), right_side[j])
     end
+    
     hamiltonian
 end
 
 
 function no_particles_from_state(state, N)
     multiplier = [reduce(+, digits(n, base=2)) for n in 0:((2N)^2 -1)]
-    dot(state, multiplier.*state)
+    braket(state, multiplier.*state)
 end
