@@ -1,3 +1,8 @@
+struct Params
+    dim_sizes # tuple with sizes of each dimension
+    next
+end
+
 """ 
     create(state_vector, pos)
 
@@ -75,35 +80,99 @@ function annihilate(state_vector, pos)
     out
 end
 
-up(cell_no) = Int(2cell_no - 1)
-down(cell_no) = Int(2cell_no)
+function move_particle(state_vector, spin, original_pos, target_pos)
+    if typeof(state_vector) == Int
+        return 0
+    end
+    if state_vector[original_pos...][spin] == 0 || state_vector[target_pos...][spin] == 1
+        return 0
+    end
+
+    out = deepcopy(state_vector)
+    out[original_pos...][spin]  = 0
+    out[target_pos...][spin]  = 1
+
+    return out
+end
+
+# get the tuples of coordinates for each neighbor of idx
+function forward_neighbors(idx, next)
+    out = []
+    t_idx = [i for i in Tuple(idx)]
+    for i in eachindex(t_idx)
+        neighbor = copy(t_idx)
+        neighbor[i] = next[i][t_idx[i]]
+        if Tuple(neighbor) != Tuple(t_idx)
+            push!(out, Tuple(neighbor))
+        end
+    end
+    out
+end
+
+function idx_to_flatstate(idx, N::Number)
+    if idx > 4^N - 1
+        throw(DomainError(idx, "Index larger than possible state."))
+    end
+    out = digits(idx, base=2)
+    while length(out) != 2N
+        append!(out, 0)
+    end
+
+    return out
+end
+
+
+function idx_to_flatstate(idx, dim_sizes::Tuple{Vararg{Int}})
+    N = reduce(*, dim_sizes)
+    idx_to_flatstate(idx, N)
+end
+
+
+function idx_to_fullstate(idx, dim_sizes)
+    flatstate_to_fullstate(idx_to_flatstate(idx, dim_sizes), dim_sizes)
+end
 
 # Converts bit state vector to the index it represents (e.g. [1, 1, 0, 0] -> 4)
-state_to_idx(state) = reduce(+, state .* [2^n for n in 0:length(state)-1]) + 1
+function state_to_idx(state) 
+    state = collect(Iterators.flatten(state))
+    reduce(+, state .* [2^n for n in 0:length(state)-1]) + 1
+end
 
 # Converts bit state vector to the full state vector (e.g. [1, 1, 0, 0] becomes a vector of length 16)
-state_to_statevec(state) = [x == state_to_idx(state) ? 1.0 : 0.0 for x in 1:2^(length(state))]
+function state_to_statevec(state) 
+    state = collect(Iterators.flatten(state))   
+    [x == state_to_idx(state) ? 1.0 : 0.0 for x in 1:2^(length(state))]
+end
+
+function flatstate_to_fullstate(flatstate, dim_sizes)
+    halfstate = [[flatstate[i], flatstate[i+1]] for i in range(1, step=2, stop=length(flatstate))]
+    reshape(halfstate, dim_sizes)
+end
 
 # perform H |state> and get statevec of: alpha |state'>
-function hamiltonian_on_state(U, t, chem_pot, state, next)
-    N = div(length(state), 2)
+function hamiltonian_on_state(params::Params, U, t, chem_pot, state)
+    # total = reshape([[0,0] for _ in 1:reduce(*, params.dim_sizes)], params.dim_sizes)
+    N = reduce(*, params.dim_sizes)
     total = zeros(2^(2N))
-    for n in 1:N
-        tmp1 = annihilate(state, up(next[n]))
-        tmp2 = create(tmp1, up(n))
-        if typeof(tmp2) != Int
-            total[state_to_idx(tmp2)] += 1
-        end
-        tmp3 = annihilate(state, down(next[n]))
-        tmp4 = create(tmp3, down(n))
-        if typeof(tmp4) != Int
-            total[state_to_idx(tmp4)] += 1
+
+    # nonzero_entries_indices = [] # przepisać kod, by skipował zera
+    for idx in CartesianIndices(state)
+        for neighbor in forward_neighbors(idx, params.next)
+            tmp1 = move_particle(state, 1, neighbor, Tuple(idx))
+            if typeof(tmp1) != Int
+                total[state_to_idx(tmp1)] += 1
+            end
+
+            tmp2 = move_particle(state, 2, neighbor, Tuple(idx))
+            if typeof(tmp2) != Int
+                total[state_to_idx(tmp2)] += 1
+            end
         end
     end
 
     kinetic = t * total
-    interacting = U * reduce(+, [state[up(n)] * state[down(n)] for n in 1:N]) .* state_to_statevec(state)
-    chemical = chem_pot * reduce(+, state) .* state_to_statevec(state)
+    interacting = U * reduce(+, [pos[1]*pos[2] for pos in state]) .* state_to_statevec(state)
+    chemical = chem_pot * reduce(+, collect(Iterators.flatten(state))) .* state_to_statevec(state)
     
     interacting + kinetic - chemical
 end
@@ -115,11 +184,14 @@ end
 
 
 # for every H |state> multiply it by every possible <state'|
-function get_hamiltonian(states, U, t, chem_pot, next, N)
-    hamiltonian = zeros((2N)^2, (2N)^2)
-    right_side = [hamiltonian_on_state(U, t, chem_pot, state, next) for state in states]
-    for i in 1:(2N)^2, j in 1:(2N)^2
-        hamiltonian[i, j] = braket(state_to_statevec(states[i]), right_side[j])
+function get_hamiltonian(params::Params, U, t, chem_pot)
+    N = reduce(*, params.dim_sizes)
+    hamiltonian = zeros(4N^2, 4N^2)
+
+    right_side = [hamiltonian_on_state(params, U, t, chem_pot, idx_to_fullstate(idx, params.dim_sizes)) for idx in 0:(4^N - 1)]
+    for i in 1:4N^2, j in 1:4N^2
+        left_state = [i == idx ? 1 : 0 for idx in 1:4^N]
+        hamiltonian[i, j] = braket(left_state, right_side[j])
     end
     
     hamiltonian
@@ -127,6 +199,6 @@ end
 
 
 function no_particles_from_state(state, N)
-    multiplier = [reduce(+, digits(n, base=2)) for n in 0:((2N)^2 -1)]
+    multiplier = [reduce(+, digits(n, base=2)) for n in 0:(4N^2 -1)]
     braket(state, multiplier.*state)
 end
