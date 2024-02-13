@@ -9,6 +9,16 @@ struct Params
 end
 
 
+struct ThermodynamicsResult
+    energies
+    states
+    density
+    avg_number_particles
+    entropy
+    grand_potential
+end
+
+
 function move_particle(state_vector, spin, original_pos, target_pos)
     if typeof(state_vector) == Int
         return -1
@@ -245,6 +255,8 @@ end
 function compute_thermodynamic_quantities(params, chem_pot, temperature, U, t, avg_no_multiplier)
     
     N = reduce(*, params.dim_sizes)
+    k = 1.0
+
     energies = []
     H_states = []
     avg_particles = []
@@ -262,8 +274,8 @@ function compute_thermodynamic_quantities(params, chem_pot, temperature, U, t, a
             t_energies, t_H_states, conv_info = out, out, out
             try
                 t_energies, t_H_states, conv_info = eigsolve(H_matrix, 4, :SR, tol=1e-27)
-                append!(energies, t_energies...)
-                append!(H_states, t_H_states...)
+                append!(energies, t_energies)
+                append!(H_states, t_H_states)
                 append!(avg_particles, [real(dot(state, no_e.*state)) for state in t_H_states]...)
             catch e
                 println("Error $e at μ=$chem_pot, T=$temperature, U=$U, t=$t")
@@ -275,8 +287,8 @@ function compute_thermodynamic_quantities(params, chem_pot, temperature, U, t, a
             diagonalized = eigen(H_matrix)
             t_energies = diagonalized.values
             t_H_states = Vector{Float64}[eachcol(diagonalized.vectors)...]
-            append!(energies, t_energies...)
-            append!(H_states, t_H_states...)
+            append!(energies, float.(t_energies))
+            append!(H_states, t_H_states)
             append!(avg_particles, [real(dot(t_state, no_e.*t_state)) for t_state in t_H_states]...)
         end
     end
@@ -288,7 +300,9 @@ function compute_thermodynamic_quantities(params, chem_pot, temperature, U, t, a
     avg_particles_temp = reduce(+, densities .* avg_particles)
     entropy = -k * reduce(+, [abs(p)*log(abs(p)) for p in densities])
     grand_potential = -k*temperature*log(stat_sum)
-    return densities, avg_particles_temp, entropy, grand_potential
+
+    return ThermodynamicsResult(energies, H_states, densities, avg_particles_temp, 
+        entropy, grand_potential)
 end
 
 # tylko lanczos
